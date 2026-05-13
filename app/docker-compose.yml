@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: todo-backend
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=development
+      - PORT=3001
+      - DB_PATH=/app/database/todos.db
+    volumes:
+      - ./database:/app/database
+    depends_on:
+      - db
+    networks:
+      - todo-network
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: todo-frontend
+    ports:
+      - "80:80"
+    networks:
+      - todo-network
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  db:
+    image: sqlite:latest
+    container_name: todo-database
+    volumes:
+      - ./database:/db
+    networks:
+      - todo-network
+    restart: unless-stopped
+
+networks:
+  todo-network:
+    driver: bridge
+
+volumes:
+  db-data:

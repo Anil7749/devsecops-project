@@ -1,0 +1,83 @@
+name: Frontend DevSecOps Pipeline
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'frontend/**'
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  frontend-ci-cd:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: ./frontend
+
+    steps:
+
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: arn:aws:iam::533267129063:role/github-actions-oidc-role
+        aws-region: ${{ secrets.AWS_REGION }}
+
+    - name: Install Trivy
+      run: |
+        sudo apt-get update
+        sudo apt-get install wget apt-transport-https gnupg lsb-release -y
+        wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | \
+        gpg --dearmor | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
+        echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] \
+        https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | \
+        sudo tee /etc/apt/sources.list.d/trivy.list
+        sudo apt-get update
+        sudo apt-get install trivy -y
+
+    - name: Trivy Filesystem Scan
+      run: |
+        trivy fs . > trivy-fs-report.txt
+
+    - name: Upload FS Report to S3
+      run: |
+        aws s3 cp trivy-fs-report.txt \
+        s3://${{ secrets.S3_BUCKET }}/frontend/
+
+    - name: Build Docker Image
+      run: |
+        docker build -t frontend-app .
+
+    - name: Trivy Docker Image Scan
+      run: |
+        trivy image frontend-app > trivy-image-report.txt
+
+    - name: Upload Image Report to S3
+      run: |
+        aws s3 cp trivy-image-report.txt \
+        s3://${{ secrets.S3_BUCKET }}/frontend/
+
+    - name: Login to ECR
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Build and Push Docker Image
+      run: |
+        docker tag frontend-app:latest \
+        ${{ secrets.ECR_REPOSITORY_FRONTEND }}:latest
+
+        docker push \
+        ${{ secrets.ECR_REPOSITORY_FRONTEND }}:latest
+
+    - name: Deploy to ECS
+      run: |
+        aws ecs update-service \
+        --cluster ${{ secrets.ECS_CLUSTER }} \
+        --service ${{ secrets.ECS_SERVICE_FRONTEND }} \
+        --force-new-deployment

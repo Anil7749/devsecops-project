@@ -1,0 +1,97 @@
+name: Backend DevSecOps Pipeline
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'backend/**'
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  backend-ci-cd:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: ./backend
+
+    steps:
+
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: arn:aws:iam::533267129063:role/github-actions-oidc-role
+        aws-region: ${{ secrets.AWS_REGION }}
+
+    - name: Install Trivy
+      run: |
+        sudo apt-get update
+        sudo apt-get install wget apt-transport-https gnupg lsb-release -y
+
+        wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | \
+        gpg --dearmor | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
+
+        echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] \
+        https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | \
+        sudo tee /etc/apt/sources.list.d/trivy.list
+
+        sudo apt-get update
+        sudo apt-get install trivy -y
+
+    - name: Trivy Filesystem Scan
+      run: |
+        trivy fs . > trivy-fs-report.txt
+
+    - name: Upload Filesystem Scan Report to S3
+      run: |
+        aws s3 cp trivy-fs-report.txt \
+        s3://${{ secrets.S3_BUCKET }}/backend/
+
+    - name: Build Docker Image
+      run: |
+        docker build -f Dockerfile.prod -t backend-app .
+
+    - name: Trivy Docker Image Scan
+      run: |
+        trivy image backend-app > trivy-image-report.txt
+
+    - name: Upload Image Scan Report to S3
+      run: |
+        aws s3 cp trivy-image-report.txt \
+        s3://${{ secrets.S3_BUCKET }}/backend/
+
+    - name: Check Critical Vulnerabilities
+      run: |
+        if grep -q "CRITICAL" trivy-image-report.txt; then
+          echo "WARNING: Critical vulnerabilities found!"
+          echo "Continuing deployment for learning purposes."
+        else
+          echo "No critical vulnerabilities found."
+        fi
+
+    - name: Login to Amazon ECR
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Tag Docker Image
+      run: |
+        docker tag backend-app:latest \
+        ${{ secrets.ECR_REPOSITORY }}:latest
+
+    - name: Push Docker Image to ECR
+      run: |
+        docker push \
+        ${{ secrets.ECR_REPOSITORY }}:latest
+
+    - name: Deploy to ECS
+      run: |
+        aws ecs update-service \
+        --cluster ${{ secrets.ECS_CLUSTER }} \
+        --service ${{ secrets.ECS_SERVICE }} \
+        --force-new-deployment
